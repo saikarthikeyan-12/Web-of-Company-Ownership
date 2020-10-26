@@ -1,0 +1,269 @@
+
+drop database first;
+create database first;
+
+\c first
+
+create Type Commontype as (
+	id char(2),
+	name varchar(25)
+);
+CREATE EXTENSION hstore;
+create table Company(cid char(2),
+		     name varchar(25),
+		     totalshares int,
+		     price int,
+		     industry text[],
+		     boardmembers text[],
+		     share hstore,
+		     primary key(cid)
+		     );
+
+/*
+   Hstore helps in storing Person owning shares ofcompany  and Company owning shares of another company in a Key-value pair.
+*/
+
+insert into Company values('c1','QUE',150000,30,Array['Software','Accounting'],Array['p3','p1','p4'],'c2 => 10000,c4 => 20000, c8 => 30000');
+
+insert into Company values('c2','RHC',250000,20,Array['Accounting'],Array['p1','p2','p5'],null);
+
+insert into Company values('c3','ALF',10000000,700,Array['Software','Automotive'],Array['p6','p7','p1'],'c9 => -100000,c4 => 400000, c8 => 100000');
+
+insert into Company values('c4','ELGOG',10000000,400,Array['Software','Search'],Array['p6','p7','p5'],'c6 => 5000');
+
+insert into Company values('c5','TFOS',10000000,300,Array['Software','Hardware'],Array['p2','p5','p4'],'c6 => 30000, c7 => 50000, c1 => 200000');
+
+insert into Company values('c6','OHAY',180000,50,Array['Search'],Array['p2','p4','p8'],null);
+
+insert into Company values('c7','GNOW',150000,300,Array['Search'],Array['p2','p3','p4'],null);
+
+insert into Company values('c8','Elpa',9000000,300,Array['Software','Hardware'],Array['p2','p3','p8'],'c5 => 20000, c4 => 30000');
+
+insert into Company values('c9','Ydex',5000000,100,Array['Software','Search'],Array['p6','p3','p8'],null);
+
+create table Person(pid char(3),
+		    name varchar(25),
+                    share hstore,
+                    primary key(pid)
+                   );
+
+insert into Person values('p1','Bill Doe','c5 => 30000, c8 => 100000');
+
+insert into Person values('p2','Bill Seth','c7 => 40000, c4 => 20000');
+
+insert into Person values('p3','John Smyth','c1 => 20000, c2 => 20000, c5 => 800000');
+
+insert into Person values('p4','Anne Smyle','c2 => 30000, c5 => 40000, c3 => 500000');
+
+insert into Person values('p5','Steve Lamp','c8 => 90000, c1 => 50000, c6 => 50000, c2 =>70000');
+
+insert into Person values('p6','May Serge','c8 => -10000, c9 => -40000, c3 => 500000, c2 => 40000');
+
+insert into Person values('p7','Bill Public','c7 => 80000,c4 => 30000 , c1 => 30000, c5 => 300000, c2 => -9000');
+
+insert into Person values('p8','Muck Lain','c6 => -40000, c2 => 60000,c8 => 30000, c9 => -80000');
+
+Create index pindex On Person(pid);
+Create index cindex On Company(cid);
+
+
+
+/*  Query 1: All the companies that are owned by one of their own members.
+*/
+Select c.name as "Company"
+from Company c, unnest(c.boardmembers) b, Person p, exist(p.share,c.cid)
+where b = p.pid and exist='t' and (p.share->c.cid)::integer>0;
+
+/*	Query 2: Networth of every person in the database.
+*/
+Select p.name as "Person",sum(c.price*(p.share -> skeys)::integer) as "Networth"
+from Person p,Company c,skeys(p.share) 
+where skeys=c.cid and (p.share->c.cid)::integer>0
+group by p.name;
+
+/*  Query 3: The board member who owns the most share of the company among other board members.
+ */
+Select c.name as "Companyname",p.name as "Topboardmember"
+from 
+(Select c.cid,max(p.share->c.cid)::integer from Company c, unnest(c.boardmembers) ,Person p,exist(p.share,c.cid)  where unnest=p.pid and exist='t' and (p.share->c.cid)::integer>0 group by c.cid) A1
+inner join Company c on c.cid=A1.cid inner join Person p on (p.share->c.cid)::integer=max 
+where p.pid = ANY (c.boardmembers);
+
+
+/*
+	Query 4: Company1 dominates Company2 and they are in the same industry.
+*/
+
+/*
+	4.1: getcountfromcrossjoin(c1,c2) returns us the count of all the boardmembers of the Company1 that are lesser than boardmembers of Company2
+*/
+CREATE OR REPLACE FUNCTION getcountfromcrossjoin(c1 char,c2 char)
+  RETURNS integer AS
+$func$
+BEGIN
+   RETURN (Select count(*) from (
+select distinct(join2.pid,join2."Company for Person")
+from(
+select *
+from
+(select * 
+from(
+SELECT pid,name, unnest(akeys(person.share)) "Company for Person",  unnest(avals(person.share)) "Share for Company" from Person) as a 
+where (a."Share for Company")::integer >0 )as person1
+INNER JOIN
+(select cid,name,"industryexpanded",totalshares,price,"Boardmemberexpanded"
+from(SELECT cid,name,totalshares,price,industry,boardmembers
+from Company)as b,unnest(industry) as "industryexpanded",unnest(boardmembers) as "Boardmemberexpanded"
+) as company1
+ON person1.pid=company1."Boardmemberexpanded"
+where company1.cid=c1
+order by company1.cid,person1.pid) as join1
+CROSS JOIN 
+(
+select *
+from
+(select * 
+from(
+SELECT pid,name, unnest(akeys(person.share)) "Company for Person",  unnest(avals(person.share)) "Share for Company" from Person) as a 
+where (a."Share for Company")::integer >0 )as person1
+INNER JOIN
+(select cid,name,"industryexpanded",totalshares,price,"Boardmemberexpanded"
+from(SELECT cid,name,totalshares,price,industry,boardmembers
+from Company)as b,unnest(industry) as "industryexpanded",unnest(boardmembers) as "Boardmemberexpanded"
+)as company1
+ON person1.pid=company1."Boardmemberexpanded"
+where company1.cid=c2
+order by company1.cid,person1.pid) as join2
+where join1."Company for Person" = join2."Company for Person" and (join1."Share for Company")::integer >= (join2."Share for Company")::integer) as "Final"
+);
+END
+$func$  LANGUAGE plpgsql;
+
+
+
+
+/* 4.2: getinitialjoin(c2) returns us the count of all the values of boardmembers that are present in company 2.
+*/
+
+CREATE OR REPLACE FUNCTION getinitialjoin(c1 char)
+  RETURNS integer AS
+$func$
+BEGIN
+   RETURN (Select count(*) from (
+select distinct(join1.pid,join1."Company for Person")
+from(
+select *
+from
+(select * 
+from(
+SELECT pid,name, unnest(akeys(person.share)) "Company for Person",  unnest(avals(person.share)) "Share for Company" from Person) as a 
+where (a."Share for Company")::integer >0 )as person1
+INNER JOIN
+(select cid,name,"industryexpanded",totalshares,price,"Boardmemberexpanded"
+from(SELECT cid,name,totalshares,price,industry,boardmembers
+from Company)as b,unnest(industry) as "industryexpanded",unnest(boardmembers) as "Boardmemberexpanded"
+)as company1
+ON person1.pid=company1."Boardmemberexpanded"
+where company1.cid=c1
+order by company1.cid,person1.pid) as join1)  as "Final2"
+);
+END
+$func$  LANGUAGE plpgsql;
+
+
+/* 4.3: This function checks if the values from getcountfromcrossjoin and getinitialjoin is equal and not equal to zero
+*/
+CREATE OR REPLACE FUNCTION validate1(c1 char,c2 char)
+RETURNS integer 
+AS 
+$$ 
+BEGIN 
+   IF  (Select * from getcountfromcrossjoin(c1,c2))::integer = (Select * from getinitialjoin(c2))::integer
+   THEN   
+   		IF(Select * from getinitialjoin(c2))::integer != 0
+   		THEN 
+   			RETURN 1;
+   		ELSE
+   			RETURN 0;
+   		END IF;
+   ELSE 
+      RETURN 0;
+   END IF; 
+END; 
+$$ 
+LANGUAGE plpgsql;
+
+/* 4.4 : "Company1 dominates Company2 and they are in the same industry."
+*/
+Select c1.name as "Company name 1",c2.name as "Company name 2"
+from Company c1,Company c2
+where c1.cid!=c2.cid and ((Select * from validate1(c1.cid,c2.cid))::integer=1) and EXISTS(Select I1
+from unnest(c1.industry) I1, unnest(c2.industry) I2 where I1 = I2);
+
+/*
+  5: Find the companies a person/company controls and the percentage of control, if that percentage
+is greater than 10%. He/she can control it directly or indirectly.
+*/
+
+
+/* 
+ 5.1: Returns all the values a particular company owns of another company with their ratios
+*/
+CREATE OR REPLACE RECURSIVE VIEW Companyindirectowns(owningid, ownerid, ratio) AS(    
+         SELECT * FROM (SELECT c1.cid as "ownerid",(a)::char(3) as "owningid",((c1.share -> a)::decimal/c1.totalshares)::decimal as "ratio" from Company c1, skeys(c1.share) a where (c1.share->a)::integer>0) as "Companydirectowns"
+         UNION 
+         SELECT (CDO."owningid")::char(2) , (CID."ownerid")::char(3), ROUND(CDO."ratio" * CID."ratio" , 25) 
+           FROM (SELECT c1.cid as "ownerid",(a)::char(3) as "owningid",((c1.share -> a)::decimal/c1.totalshares)::decimal as "ratio" from Company c1, skeys(c1.share) a where (c1.share->a)::integer>0) CDO, Companyindirectowns CID
+          WHERE CDO."ownerid" = CID."owningid" AND CDO."owningid" != CID."ownerid");
+
+/*
+  5.2: Returns all the Companies that a Person indirectly owns
+*/
+CREATE OR REPLACE RECURSIVE VIEW Personindirectowns(owningid, ownerid, ratio) AS(      
+       SELECT * FROM (Select c.cid,(p.pid),((p.share -> skeys)::decimal/c.totalshares)::decimal as "fract"
+	from Person p, Company c, exist(p.share,c.cid),skeys(p.share)
+	where exist='t' and skeys=c.cid and (p.share->c.cid)::integer>0) as "Peersondirectowns"  
+        UNION 
+        SELECT (PID."owningid")::char(2) , (SRC."ownerid")::char(3), ROUND(PID."ratio" * SRC."ratio" , 25)
+        FROM Personindirectowns PID, Companyindirectowns SRC
+        WHERE PID."ownerid" = SRC."owningid");    
+
+/*
+ 5.3: Find the companies a person/company controls and the percentage of control, if that percentage
+is greater than 10%. He/she can control it directly or indirectly.
+*/
+
+Select * from (Select p.name as "Person name",c.name as "Company Name",("Percentage")*100 as "Percentage"
+from (Select owningid,ownerid,sum(ratio) as "Percentage"
+from Personindirectowns
+group by 1,2) as "ownership" 
+inner join Person p on p.pid=ownership.ownerid
+inner join Company c on c.cid=ownership.owningid
+where ("Percentage"*100)>10
+) as "Output";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
